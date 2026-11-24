@@ -1,0 +1,69 @@
+# The human side of "act with approval": the on-call group may change
+# workloads in the namespaces it runs (the built-in edit role), the agent may
+# not. In the lab the on-call engineer is impersonated
+# (--as oncall@example.com --as-group sre-oncall), standing in for whatever
+# your identity provider puts in the kubeconfig of the person approving.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sre-oncall-edit
+  namespace: sandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: edit
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: sre-oncall
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sre-oncall-edit
+  namespace: prod
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: edit
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: sre-oncall
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sre-oncall-edit
+  namespace: shop
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: edit
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: sre-oncall
+---
+# The on-call engineer reads the agent's verdicts (HealthCheck status).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: healthcheck-reader
+rules:
+- apiGroups: ["holmesgpt.dev"]
+  resources: ["healthchecks", "triggeredhealthchecks", "scheduledhealthchecks"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sre-oncall-healthcheck-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: healthcheck-reader
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: sre-oncall

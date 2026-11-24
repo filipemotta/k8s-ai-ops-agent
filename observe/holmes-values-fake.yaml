@@ -1,0 +1,10 @@
+# Default mode (LLM_MODE=fake): the scripted OpenAI-compatible stand-in in
+# lab/fake-llm. Layered on top of holmes-values.yaml, whose additionalEnvVars
+# set MODEL, OPENAI_API_BASE and OPENAI_API_KEY for this entry.
+modelList:
+  lab-fake:
+    model: openai/lab-scripted
+    api_base: "{{ env.OPENAI_API_BASE }}"
+    api_key: "{{ env.OPENAI_API_KEY }}"
+    custom_args:
+      max_context_size: 128000    # an alias LiteLLM does not know: state the window

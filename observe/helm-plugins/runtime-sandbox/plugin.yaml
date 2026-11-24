@@ -1,0 +1,14 @@
+# A Helm 4 post-renderer plugin (type postrenderer/v1, subprocess runtime).
+# The holmes chart has no value for runtimeClassName, so the platform adds it
+# after the chart renders: post-render.sh pipes the manifests through
+# Kustomize with runtime-patch.yaml.
+# Helm finds it through HELM_PLUGINS (scripts/lib.sh points it here) and runs
+# it with: helm upgrade --install ... --post-renderer runtime-sandbox
+name: runtime-sandbox
+version: 0.1.0
+type: postrenderer/v1
+apiVersion: v1
+runtime: subprocess
+runtimeConfig:
+  platformCommand:
+  - command: "${HELM_PLUGIN_DIR}/post-render.sh"

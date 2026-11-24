@@ -1,0 +1,96 @@
+# kube-prometheus-stack 93.9.0 (Prometheus Operator v0.95.2), trimmed to what
+# the lab uses: Prometheus, Alertmanager, kube-state-metrics and the kubelet's
+# cAdvisor metrics. No Grafana, no node-exporter, no default rules: the only
+# rule is the lab's own (predict/prometheusrule.yaml).
+fullnameOverride: kps
+
+defaultRules:
+  create: false
+grafana:
+  enabled: false
+nodeExporter:
+  enabled: false
+kubeApiServer:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+kubeEtcd:
+  enabled: false
+coreDns:
+  enabled: false
+
+# Container memory comes from the kubelet's cAdvisor endpoint (scraped every
+# 10s by default), limits from kube-state-metrics.
+kubelet:
+  enabled: true
+  serviceMonitor:
+    cAdvisor: true
+    probes: false
+    resource: false
+
+prometheusOperator:
+  # No admission webhook and no certgen Job: fewer moving parts in a lab.
+  admissionWebhooks:
+    enabled: false
+  tls:
+    enabled: false
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {memory: 256Mi}
+
+prometheus:
+  prometheusSpec:
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+    retention: 2h
+    # Pick up every PrometheusRule and ServiceMonitor, not only the release's.
+    ruleSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    resources:
+      requests: {cpu: 100m, memory: 256Mi}
+      limits: {memory: 768Mi}
+
+alertmanager:
+  alertmanagerSpec:
+    # The bridge's bearer token (created by scripts/00-cluster.sh before this
+    # chart), mounted at /etc/alertmanager/secrets/alert-bridge-token/.
+    secrets:
+    - alert-bridge-token
+    resources:
+      requests: {cpu: 20m, memory: 32Mi}
+      limits: {memory: 128Mi}
+  # Alerts the agent should investigate go to the alert bridge
+  # (predict/alert-bridge), which turns each one into a HealthCheck. Every
+  # other alert goes nowhere.
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['alertname', 'namespace', 'pod']
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 12h
+      receiver: 'null'
+      routes:
+      - receiver: holmes-investigate
+        matchers:
+        - agent = "investigate"
+    receivers:
+    - name: 'null'
+    - name: holmes-investigate
+      webhook_configs:
+      - url: http://alert-bridge.alert-bridge.svc.cluster.local:8080/alertmanager
+        send_resolved: false
+        http_config:
+          authorization:
+            type: Bearer
+            credentials_file: /etc/alertmanager/secrets/alert-bridge-token/token
+
+kube-state-metrics:
+  resources:
+    requests: {cpu: 20m, memory: 32Mi}
+    limits: {memory: 128Mi}

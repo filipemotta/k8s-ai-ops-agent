@@ -1,0 +1,35 @@
+# Every rollout of checkout in sandbox triggers an investigation 45 seconds
+# later (the default is 300; a lab cannot wait five minutes per release). The
+# operator substitutes the rollout's facts into the query and prepends them.
+# On failure (NO-GO) the verdict goes to the destination; a GO is recorded in
+# the HealthCheck's status only: Holmes 0.47 notifies destinations on failed
+# checks, not on passed ones. scripts/promote.sh reads that status.
+# The query names the team's runbook: in a health check Holmes 0.47 does not put
+# the skill catalog in the prompt, so the check says which one to fetch.
+# "[lab:rollout]" selects the fake LLM's script; a real model ignores it.
+apiVersion: holmesgpt.dev/v1alpha1
+kind: TriggeredHealthCheck
+metadata:
+  name: checkout-rollout
+  namespace: sandbox
+spec:
+  deploymentRollout:
+    selector:
+      matchLabels:
+        app: checkout
+  delaySeconds: 45
+  cooldownSeconds: 0
+  query: |
+    [lab:rollout] {{ .deployment }} was just rolled out in namespace {{ .namespace }} (sandbox),
+    from {{ .old.image }} to {{ .new.image }}. Are the new pods healthy: running, ready, not
+    restarting, no errors in their logs? Answer GO or NO-GO for production, and if NO-GO,
+    the one command a human should run to restore the previous version.
+    Runbook for this check: checkout-rollout-verification. Fetch it with fetch_skill and follow it.
+    End your rationale with exactly one line, without markdown:
+    SUGGESTED_FIX: <one kubectl command a human could run>, or SUGGESTED_FIX: none.
+  timeout: 120
+  mode: alert
+  destinations:
+  - type: webhook
+    config:
+      webhook_url: http://receiver.lab-receiver.svc.cluster.local:8080/holmes

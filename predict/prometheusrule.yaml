@@ -1,0 +1,65 @@
+# Fire on the trend, not on the level: predict_linear fits a line through the
+# last 2 minutes of each container's working set and asks where it will be in
+# 10 minutes. If that is above the container's memory limit, the container is
+# heading for an OOMKill while it still looks healthy.
+#
+# The windows are sized for a lab that has to finish in minutes; keep "for"
+# longer than the range of predict_linear (see the comment on "for"). In production
+# use hours of history and a horizon you can act within, for example
+# predict_linear(...[1h], 4 * 3600), and keep "for" long enough to ride out a
+# burst (a cache warming up is a straight line for a while too).
+#
+# Every alert links its runbook (runbook_url); the agent gets the same file as
+# a skill (runbooks/<id>/SKILL.md) and the bridge tells it which one applies.
+#
+# The label agent: investigate routes the alert to the alert bridge
+# (platform/kube-prometheus-stack-values.yaml), which asks the agent to
+# investigate. The spec below is also tested offline by promtool
+# (prometheusrule.test.yaml, run by validate.sh).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: memory-trend
+  namespace: monitoring
+spec:
+  groups:
+  - name: memory-trend
+    rules:
+    - alert: ContainerMemoryWillHitLimit
+      expr: |
+        max by (namespace, pod, container) (
+          predict_linear(container_memory_working_set_bytes{container!="", container!="POD"}[2m], 600)
+        )
+        > on (namespace, pod, container)
+        max by (namespace, pod, container) (
+          kube_pod_container_resource_limits{resource="memory"}
+        )
+      # "for" longer than the 2m window: a container that just started climbs
+      # from zero to its working set in seconds, and a line through that ramp
+      # crosses any small limit. The first lab run with a real model had the
+      # rule fire for three healthy containers that had just started (48-64 MiB
+      # limits), each one an investigation the model had to pay for. With
+      # for: 3m the ramp has left the window before the alert can fire.
+      for: 3m
+      labels:
+        severity: warning
+        agent: investigate
+      annotations:
+        summary: "{{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) will reach its memory limit within 10 minutes at the current trend"
+        runbook_url: https://github.com/filipemotta/k8s-ai-ops-agent/blob/main/runbooks/container-memory-will-hit-limit/SKILL.md
+    # The classic one, for contrast: it fires after the failure. kube-state-
+    # metrics reports the CrashLoopBackOff waiting reason; max_over_time keeps
+    # the alert steady across the moments the container is briefly running.
+    # (kubernetes-mixin uses [5m] and for: 15m; shortened for the lab.)
+    - alert: KubePodCrashLooping
+      expr: |
+        max by (namespace, pod, container) (
+          max_over_time(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"}[2m])
+        ) >= 1
+      for: 1m
+      labels:
+        severity: warning
+        agent: investigate
+      annotations:
+        summary: "{{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) is crash looping"
+        runbook_url: https://github.com/filipemotta/k8s-ai-ops-agent/blob/main/runbooks/pod-crash-looping/SKILL.md

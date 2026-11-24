@@ -1,0 +1,70 @@
+# sandbox: where every release of checkout lands first, watched by the agent.
+# prod: where it goes only after the agent's check of the sandbox rollout
+# passed (scripts/promote.sh).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sandbox
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prod
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+# The checkout program every release runs: it refuses to start without the
+# payments URL, like many services do when a config key goes missing.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: checkout-app
+  namespace: sandbox
+data:
+  app.py: |
+    import os, sys
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    version = os.environ.get("VERSION", "?")
+    url = os.environ.get("PAYMENTS_URL")
+    if not url:
+        print(f"checkout {version}: FATAL PAYMENTS_URL is not set, refusing to start", flush=True)
+        sys.exit(1)
+    print(f"checkout {version}: serving, payments at {url}", flush=True)
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(f"checkout {version}\n".encode())
+        def log_message(self, *args):
+            pass
+
+    HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: checkout-app
+  namespace: prod
+data:
+  app.py: |
+    import os, sys
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    version = os.environ.get("VERSION", "?")
+    url = os.environ.get("PAYMENTS_URL")
+    if not url:
+        print(f"checkout {version}: FATAL PAYMENTS_URL is not set, refusing to start", flush=True)
+        sys.exit(1)
+    print(f"checkout {version}: serving, payments at {url}", flush=True)
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(f"checkout {version}\n".encode())
+        def log_message(self, *args):
+            pass
+
+    HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()

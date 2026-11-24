@@ -1,0 +1,166 @@
+# Egress of the agent's namespace: closed, then opened to exactly what the
+# agent needs. Anything a prompt injection asks it to reach elsewhere (a
+# collector, the internet, other workloads, an outside DNS server) gets a
+# dropped packet.
+#
+#   DNS                 Holmes: agent-dns only (answers cluster.local, nothing
+#                       else, observe/agent-dns.yaml); operator: kube-dns
+#   Kubernetes API      the API server endpoint (see allow-apiserver below)
+#   Prometheus          monitoring/kps-prometheus, 9090
+#   LLM                 lab-llm/fake-llm, 8080
+#   Destination         lab-receiver/receiver, 8080
+#   Internet            only through egress-proxy/egress-proxy:3128, which
+#                       allows HTTPS to a list of host names (Bedrock, Slack)
+#   operator -> Holmes  inside the namespace, 5050
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: holmes
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-agent
+  namespace: holmes
+spec:
+  podSelector:
+    matchLabels:
+      app: holmes
+  policyTypes: ["Egress"]
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: agent-dns
+      podSelector:
+        matchLabels:
+          app: agent-dns
+    ports:
+    - {protocol: UDP, port: 1053}
+    - {protocol: TCP, port: 1053}
+---
+# The operator never runs a command a model chose: it keeps the cluster DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-operator
+  namespace: holmes
+spec:
+  podSelector:
+    matchLabels:
+      app: holmes-operator
+  policyTypes: ["Egress"]
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - {protocol: UDP, port: 53}
+    - {protocol: TCP, port: 53}
+---
+# The operator calls the Holmes API inside the namespace; nothing else may.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-operator-to-holmes
+  namespace: holmes
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+  - from:
+    - podSelector: {}
+    ports:
+    - {protocol: TCP, port: 5050}
+  egress:
+  - to:
+    - podSelector: {}
+    ports:
+    - {protocol: TCP, port: 5050}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-agent-dependencies
+  namespace: holmes
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus
+    ports:
+    - {protocol: TCP, port: 9090}
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: lab-llm
+    ports:
+    - {protocol: TCP, port: 8080}
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: lab-receiver
+    ports:
+    - {protocol: TCP, port: 8080}
+---
+# The only way out of the cluster: the egress proxy, and only for Holmes.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-proxy
+  namespace: holmes
+spec:
+  podSelector:
+    matchLabels:
+      app: holmes
+  policyTypes: ["Egress"]
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: egress-proxy
+      podSelector:
+        matchLabels:
+          app: egress-proxy
+    ports:
+    - {protocol: TCP, port: 3128}
+---
+# The API server is not a pod: a NetworkPolicy can only name it by IP. Both
+# the Service's ClusterIP and the endpoint behind it are listed, because
+# implementations differ on whether egress is matched before or after the
+# Service is translated to its endpoint. 192.0.2.10 is a placeholder:
+# scripts/01-observe.sh writes the cluster's real endpoint
+# (kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-apiserver
+  namespace: holmes
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+  - to:
+    - ipBlock:
+        cidr: 10.96.0.1/32
+    ports:
+    - {protocol: TCP, port: 443}
+  - to:
+    - ipBlock:
+        cidr: 192.0.2.10/32
+    ports:
+    - {protocol: TCP, port: 6443}

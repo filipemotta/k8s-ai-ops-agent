@@ -1,0 +1,148 @@
+# The alert bridge (bridge.py, in a ConfigMap created by scripts/02-predict.sh):
+# Alertmanager posts firing alerts here, the bridge creates one HealthCheck
+# per alert in namespace holmes. Its only permission is "create healthchecks"
+# in that namespace. It accepts requests only from Alertmanager (NetworkPolicy
+# below) carrying the shared bearer token: the Secret alert-bridge-token, the
+# same random value as monitoring/alert-bridge-token, generated when the lab
+# runs (scripts/00-cluster.sh) and never stored in the repository.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: alert-bridge
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alert-bridge
+  namespace: alert-bridge
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: alert-bridge
+  namespace: holmes
+rules:
+- apiGroups: ["holmesgpt.dev"]
+  resources: ["healthchecks"]
+  verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: alert-bridge
+  namespace: holmes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: alert-bridge
+subjects:
+- kind: ServiceAccount
+  name: alert-bridge
+  namespace: alert-bridge
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alert-bridge
+  namespace: alert-bridge
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: alert-bridge}
+  template:
+    metadata:
+      labels: {app: alert-bridge}
+    spec:
+      serviceAccountName: alert-bridge
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+      - name: alert-bridge
+        image: python:3.13-alpine@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e
+        command: ["python3", "-u", "/app/bridge.py"]
+        env:
+        - name: BRIDGE_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: alert-bridge-token
+              key: token
+        - name: HC_NAMESPACE
+          value: holmes
+        - name: ALLOWED_ALERTS
+          value: ContainerMemoryWillHitLimit,KubePodCrashLooping
+        - name: ALLOWED_RUNBOOKS
+          value: container-memory-will-hit-limit,pod-crash-looping
+        - name: QUERY_PREFIX
+          value: "[lab:alert]"
+        # The webhook receiver stands in for Slack. With a Slack bot token,
+        # add {"type": "slack", "config": {"channel": "#your-channel"}}.
+        - name: DESTINATIONS
+          value: '[{"type": "webhook", "config": {"webhook_url": "http://receiver.lab-receiver.svc.cluster.local:8080/holmes"}}]'
+        ports:
+        - {name: http, containerPort: 8080}
+        # An exec probe: the NetworkPolicy admits Alertmanager only.
+        readinessProbe:
+          exec:
+            command: ["python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2)"]
+          periodSeconds: 5
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: ["ALL"]}
+        resources:
+          requests: {cpu: 5m, memory: 24Mi}
+          limits: {memory: 64Mi}
+        volumeMounts:
+        - {name: app, mountPath: /app}
+      volumes:
+      - name: app
+        configMap: {name: alert-bridge}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alert-bridge
+  namespace: alert-bridge
+spec:
+  selector: {app: alert-bridge}
+  ports:
+  - {name: http, port: 8080, targetPort: http}
+---
+# In: Alertmanager, on the bridge's port, and nothing else.
+# Out: the API server (to create HealthChecks), and nothing else; the bridge
+# reaches it by IP (KUBERNETES_SERVICE_HOST), no DNS needed. 192.0.2.10 is a
+# placeholder that scripts/02-predict.sh replaces with the API server endpoint,
+# as in observe/networkpolicy.yaml.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: alert-bridge
+  namespace: alert-bridge
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: alertmanager
+    ports:
+    - {protocol: TCP, port: 8080}
+  egress:
+  - to:
+    - ipBlock:
+        cidr: 10.96.0.1/32
+    ports:
+    - {protocol: TCP, port: 443}
+  - to:
+    - ipBlock:
+        cidr: 192.0.2.10/32
+    ports:
+    - {protocol: TCP, port: 6443}

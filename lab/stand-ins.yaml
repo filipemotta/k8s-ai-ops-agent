@@ -1,0 +1,232 @@
+# The lab's stand-ins, each a few lines of Python (standard library) in a
+# ConfigMap that scripts/00-cluster.sh creates from lab/*/server.py:
+#   lab-llm/fake-llm        the scripted OpenAI-compatible LLM (no paid call)
+#   lab-receiver/receiver   the webhook destination, standing in for Slack
+#   attacker/collector      where a prompt injection tries to send data
+#   lab-upstream/allowed-upstream  stands in for an allowed external API (Slack,
+#                           Bedrock) behind the egress proxy, so the proxy's
+#                           "allowed" path is tested offline
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lab-llm
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lab-receiver
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: attacker
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lab-upstream
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-llm
+  namespace: lab-llm
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: fake-llm}
+  template:
+    metadata:
+      labels: {app: fake-llm}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+      - name: fake-llm
+        image: python:3.13-alpine@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e
+        command: ["python3", "-u", "/app/server.py"]
+        ports:
+        - {name: http, containerPort: 8080}
+        readinessProbe:
+          httpGet: {path: /healthz, port: http}
+          periodSeconds: 3
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: ["ALL"]}
+        resources:
+          requests: {cpu: 10m, memory: 32Mi}
+          limits: {memory: 96Mi}
+        volumeMounts:
+        - {name: app, mountPath: /app}
+      volumes:
+      - name: app
+        configMap: {name: fake-llm}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-llm
+  namespace: lab-llm
+spec:
+  selector: {app: fake-llm}
+  ports:
+  - {name: http, port: 8080, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: receiver
+  namespace: lab-receiver
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: receiver}
+  template:
+    metadata:
+      labels: {app: receiver}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+      - name: receiver
+        image: python:3.13-alpine@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e
+        command: ["python3", "-u", "/app/server.py"]
+        ports:
+        - {name: http, containerPort: 8080}
+        readinessProbe:
+          httpGet: {path: /healthz, port: http}
+          periodSeconds: 3
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: ["ALL"]}
+        resources:
+          requests: {cpu: 10m, memory: 32Mi}
+          limits: {memory: 96Mi}
+        volumeMounts:
+        - {name: app, mountPath: /app}
+      volumes:
+      - name: app
+        configMap: {name: receiver}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: receiver
+  namespace: lab-receiver
+spec:
+  selector: {app: receiver}
+  ports:
+  - {name: http, port: 8080, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: collector
+  namespace: attacker
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: collector}
+  template:
+    metadata:
+      labels: {app: collector}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+      - name: collector
+        image: python:3.13-alpine@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e
+        command: ["python3", "-u", "/app/server.py"]
+        ports:
+        - {name: http, containerPort: 8080}
+        readinessProbe:
+          httpGet: {path: /healthz, port: http}
+          periodSeconds: 3
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: ["ALL"]}
+        resources:
+          requests: {cpu: 10m, memory: 32Mi}
+          limits: {memory: 96Mi}
+        volumeMounts:
+        - {name: app, mountPath: /app}
+      volumes:
+      - name: app
+        configMap: {name: receiver}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: collector
+  namespace: attacker
+spec:
+  selector: {app: collector}
+  ports:
+  - {name: http, port: 8080, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: allowed-upstream
+  namespace: lab-upstream
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: allowed-upstream}
+  template:
+    metadata:
+      labels: {app: allowed-upstream}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+      - name: allowed-upstream
+        image: python:3.13-alpine@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e
+        command: ["python3", "-u", "/app/server.py"]
+        ports:
+        - {name: http, containerPort: 8080}
+        readinessProbe:
+          httpGet: {path: /healthz, port: http}
+          periodSeconds: 3
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: ["ALL"]}
+        resources:
+          requests: {cpu: 10m, memory: 32Mi}
+          limits: {memory: 96Mi}
+        volumeMounts:
+        - {name: app, mountPath: /app}
+      volumes:
+      - name: app
+        configMap: {name: receiver}
+---
+# Port 443, like the APIs it stands in for (the proxy only tunnels to 443).
+apiVersion: v1
+kind: Service
+metadata:
+  name: allowed-upstream
+  namespace: lab-upstream
+spec:
+  selector: {app: allowed-upstream}
+  ports:
+  - {name: https, port: 443, targetPort: http}

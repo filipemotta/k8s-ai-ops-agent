@@ -1,0 +1,7 @@
+# Every Deployment of the agent's release runs under gVisor. Kustomize
+# applies this patch to each Deployment the chart rendered (the target in
+# post-render.sh selects them all); the chart's own values set the
+# securityContext.
+- op: add
+  path: /spec/template/spec/runtimeClassName
+  value: gvisor

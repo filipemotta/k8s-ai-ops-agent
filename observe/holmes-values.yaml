@@ -1,0 +1,144 @@
+# HolmesGPT, chart holmes 0.47.0 (robusta-charts), as an untrusted tenant.
+# Installed by scripts/01-observe.sh with the post-renderer that adds
+# runtimeClassName: gvisor (helm-plugins/runtime-sandbox), which the chart has
+# no value for.
+
+# The LLM. In the lab: the scripted OpenAI-compatible stand-in (lab/fake-llm),
+# no paid call. For Amazon Bedrock see holmes-values-bedrock.yaml.
+additionalEnvVars:
+- name: MODEL
+  value: lab-fake                 # a key of modelList below
+- name: OPENAI_API_BASE
+  value: http://fake-llm.lab-llm.svc.cluster.local:8080/v1
+- name: OPENAI_API_KEY
+  value: none                     # the stand-in needs no key; LiteLLM wants one set
+# The container runs as a user with no home directory and a read-only root
+# filesystem: point HOME (kubectl's cache, Python's) at the writable /tmp.
+- name: HOME
+  value: /tmp
+# Outside the cluster only through the egress proxy (observe/egress-proxy.yaml).
+# Cluster names and the API server go direct. kubectl (Go), LiteLLM (httpx),
+# boto3 and the Slack SDK read these variables.
+- name: HTTPS_PROXY
+  value: http://egress-proxy.egress-proxy.svc.cluster.local:3128
+- name: HTTP_PROXY
+  value: http://egress-proxy.egress-proxy.svc.cluster.local:3128
+- name: NO_PROXY
+  value: .svc,.cluster.local,10.96.0.0/16,localhost,127.0.0.1
+# LiteLLM refreshes its model price table from GitHub; use the copy it ships.
+- name: LITELLM_LOCAL_MODEL_COST_MAP
+  value: "True"
+# Slack (optional): the bot token comes from a Secret only when you create it
+# (scripts/01-observe.sh does it if SLACK_TOKEN is set when you run the lab).
+- name: SLACK_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: holmes-slack
+      key: token
+      optional: true
+
+# modelList: per LLM mode, in holmes-values-fake.yaml or holmes-values-bedrock.yaml
+# (Helm merges maps across -f files, so the two modes never share one list).
+
+toolsets:
+  kubernetes/core:
+    enabled: true
+  kubernetes/logs:
+    enabled: true
+  prometheus/metrics:
+    enabled: true
+    config:
+      prometheus_url: http://kps-prometheus.monitoring.svc.cluster.local:9090
+  # The bash toolset is ON by default with the "extended" allow-list (cat,
+  # base64, find... on top of kubectl get/describe/logs). "core" drops the
+  # filesystem commands: cat of the ServiceAccount token now needs an approval
+  # nobody can give in a health check. The deny list is matched by prefix: it
+  # stops the obvious form of a command, not every spelling of it (see the
+  # injection test in scripts/01-observe.sh). RBAC is the boundary.
+  bash:
+    enabled: true
+    config:
+      builtin_allowlist: core
+      deny:
+      - kubectl get secret
+      - kubectl describe secret
+  # Tools that reach arbitrary destinations are exfiltration paths for a model
+  # that follows injected instructions: off.
+  internet:
+    enabled: false
+  connectivity_check:
+    enabled: false
+  # Robusta's SaaS integration is not used here.
+  robusta:
+    enabled: false
+  # Runbooks: the fetch_skill tool reads them from customSkillPaths below.
+  skills:
+    enabled: true
+
+# DNS: only the agent's own resolver, which answers cluster.local and refuses
+# everything else (observe/agent-dns.yaml). No DNS query leaves the cluster.
+dnsConfig:
+  enabled: true
+  policy: "None"
+  nameservers:
+  - 10.96.53.53
+  searches:
+  - holmes.svc.cluster.local
+  - svc.cluster.local
+  - cluster.local
+  options:
+  - name: ndots
+    value: "5"
+
+# The team's runbooks (runbooks/<id>/SKILL.md), loaded by scripts/01-observe.sh
+# into the ConfigMap holmes-runbooks and mounted read-only. ConfigMap keys
+# cannot contain "/", so each key is projected to <id>/SKILL.md.
+additionalVolumes:
+- name: runbooks
+  configMap:
+    name: holmes-runbooks
+    items:
+    - key: container-memory-will-hit-limit.SKILL.md
+      path: container-memory-will-hit-limit/SKILL.md
+    - key: pod-crash-looping.SKILL.md
+      path: pod-crash-looping/SKILL.md
+    - key: checkout-rollout-verification.SKILL.md
+      path: checkout-rollout-verification/SKILL.md
+additionalVolumeMounts:
+- name: runbooks
+  mountPath: /etc/holmes/runbooks
+  readOnly: true
+customSkillPaths:
+- /etc/holmes/runbooks
+
+# Restricted Pod Security. The chart already forces
+# readOnlyRootFilesystem: true on the container and mounts /tmp as an emptyDir.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+
+# The chart asks for 2Gi; the lab measured what the agent uses.
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    memory: 1Gi
+
+# The operator turns HealthCheck, ScheduledHealthCheck and TriggeredHealthCheck
+# resources (holmesgpt.dev/v1alpha1, alpha) into calls to the Holmes API.
+operator:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 384Mi

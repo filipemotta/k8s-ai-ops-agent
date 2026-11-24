@@ -1,0 +1,58 @@
+# Optional: Amazon Bedrock instead of the scripted stand-in (LLM_MODE=bedrock).
+# Layered on top of holmes-values.yaml. Helm replaces lists, so the whole
+# additionalEnvVars list is repeated here.
+#
+# Egress: bedrock-runtime.us-east-1.amazonaws.com is added to the egress
+# proxy's allowlist in this mode (scripts/01-observe.sh); nothing else opens.
+#
+# Before the install (scripts/01-observe.sh does it from your environment):
+#   Secret holmes-aws with AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and
+#   AWS_SESSION_TOKEN from a temporary STS session (static keys are refused).
+# On EKS prefer IRSA or EKS Pod Identity to static keys (docs/ai-providers/aws-bedrock.md).
+#
+# Model: Claude Opus 5.5 through the US cross-Region inference profile
+# us.anthropic.claude-opus-5-5 (listed in us-east-1 and invoked with a test call
+# on 2026-11-24). Every health check is
+# several model calls: the lab's transcript measures the prompt size per call.
+additionalEnvVars:
+- name: MODEL
+  value: bedrock-opus
+- name: HOME
+  value: /tmp
+# Outside the cluster only through the egress proxy (observe/egress-proxy.yaml).
+# Cluster names and the API server go direct. kubectl (Go), LiteLLM (httpx),
+# boto3 and the Slack SDK read these variables.
+- name: HTTPS_PROXY
+  value: http://egress-proxy.egress-proxy.svc.cluster.local:3128
+- name: HTTP_PROXY
+  value: http://egress-proxy.egress-proxy.svc.cluster.local:3128
+- name: NO_PROXY
+  value: .svc,.cluster.local,10.96.0.0/16,localhost,127.0.0.1
+# LiteLLM refreshes its model price table from GitHub; use the copy it ships.
+- name: LITELLM_LOCAL_MODEL_COST_MAP
+  value: "True"
+# Cost evidence: Holmes logs each model call's token usage (the usage object
+# only, no prompt) at INFO; tools/collect-llm-usage.sh reads it from the logs.
+- name: LOG_LLM_USAGE_RESPONSE
+  value: "true"
+- name: SLACK_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: holmes-slack
+      key: token
+      optional: true
+
+# One JSON object per log line, with its timestamp, so each usage line can be
+# matched to the health check that was running.
+enableJsonLogsFormat: true
+
+extraEnvVarsSecrets:
+- holmes-aws
+
+modelList:
+  bedrock-opus:
+    model: bedrock/us.anthropic.claude-opus-5-5
+    aws_region_name: us-east-1
+    aws_access_key_id: envRef:AWS_ACCESS_KEY_ID
+    aws_secret_access_key: envRef:AWS_SECRET_ACCESS_KEY
+    aws_session_token: envRef:AWS_SESSION_TOKEN

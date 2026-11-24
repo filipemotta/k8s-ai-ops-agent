@@ -1,0 +1,94 @@
+# promtool unit tests for the spec of prometheusrule.yaml (tools/test-rules.sh
+# extracts it to memory-trend.rules.yaml next to a copy of this file).
+#   leaking: 20 MiB growing 24 MiB a minute against a 192 MiB limit. The alert
+#            is pending from 15s and fires at 3m15s, when the container uses
+#            98 MiB, 51% of its limit: a "memory above 90%" alert would stay silent.
+#   startup: a container that jumps from 8 MiB to 30 MiB as it starts, then
+#            stays flat, under a 48 MiB limit. The line through the ramp crosses
+#            the limit, but only while the ramp is in the 2m window: shorter than
+#            "for", so it never fires.
+#   crash:   a container waiting in CrashLoopBackOff, briefly running between
+#            restarts: KubePodCrashLooping fires after 1m and stays firing.
+#   steady:  170 MiB, 88% of the limit, flat. No alert: high but not heading
+#            anywhere. A static threshold at 85% would page for nothing.
+rule_files:
+- memory-trend.rules.yaml
+evaluation_interval: 15s
+tests:
+- name: leaking container fires long before the limit
+  interval: 15s
+  input_series:
+  - series: 'container_memory_working_set_bytes{namespace="shop",pod="leaky-1",container="leaky",id="/a"}'
+    values: '20971520+6291456x20'
+  - series: 'kube_pod_container_resource_limits{namespace="shop",pod="leaky-1",container="leaky",resource="memory",unit="byte"}'
+    values: '201326592x20'
+  alert_rule_test:
+  - eval_time: 3m
+    alertname: ContainerMemoryWillHitLimit
+    exp_alerts: []
+  - eval_time: 4m
+    alertname: ContainerMemoryWillHitLimit
+    exp_alerts:
+    - exp_labels:
+        alertname: ContainerMemoryWillHitLimit
+        namespace: shop
+        pod: leaky-1
+        container: leaky
+        severity: warning
+        agent: investigate
+      exp_annotations:
+        summary: "shop/leaky-1 (leaky) will reach its memory limit within 10 minutes at the current trend"
+        runbook_url: https://github.com/filipemotta/k8s-ai-ops-agent/blob/main/runbooks/container-memory-will-hit-limit/SKILL.md
+- name: a container that just started does not fire
+  interval: 15s
+  input_series:
+  - series: 'container_memory_working_set_bytes{namespace="prod",pod="checkout-1",container="checkout",id="/c"}'
+    values: '8388608 31457280x30'
+  - series: 'kube_pod_container_resource_limits{namespace="prod",pod="checkout-1",container="checkout",resource="memory",unit="byte"}'
+    values: '50331648x30'
+  alert_rule_test:
+  - eval_time: 1m
+    alertname: ContainerMemoryWillHitLimit
+    exp_alerts: []
+  - eval_time: 3m
+    alertname: ContainerMemoryWillHitLimit
+    exp_alerts: []
+  - eval_time: 6m
+    alertname: ContainerMemoryWillHitLimit
+    exp_alerts: []
+- name: steady high usage does not fire
+  interval: 15s
+  input_series:
+  - series: 'container_memory_working_set_bytes{namespace="shop",pod="cache-1",container="cache",id="/b"}'
+    values: '178257920x20'
+  - series: 'kube_pod_container_resource_limits{namespace="shop",pod="cache-1",container="cache",resource="memory",unit="byte"}'
+    values: '201326592x20'
+  alert_rule_test:
+  - eval_time: 3m
+    alertname: ContainerMemoryWillHitLimit
+    exp_alerts: []
+  - eval_time: 5m
+    alertname: ContainerMemoryWillHitLimit
+    exp_alerts: []
+- name: crash looping container fires and links its runbook
+  interval: 15s
+  input_series:
+  - series: 'kube_pod_container_status_waiting_reason{namespace="sandbox",pod="checkout-1",container="checkout",reason="CrashLoopBackOff"}'
+    values: '1 1 1 0 1 1 1 1 0 1 1 1 1 1 1 1'
+  alert_rule_test:
+  - eval_time: 30s
+    alertname: KubePodCrashLooping
+    exp_alerts: []
+  - eval_time: 3m
+    alertname: KubePodCrashLooping
+    exp_alerts:
+    - exp_labels:
+        alertname: KubePodCrashLooping
+        namespace: sandbox
+        pod: checkout-1
+        container: checkout
+        severity: warning
+        agent: investigate
+      exp_annotations:
+        summary: "sandbox/checkout-1 (checkout) is crash looping"
+        runbook_url: https://github.com/filipemotta/k8s-ai-ops-agent/blob/main/runbooks/pod-crash-looping/SKILL.md

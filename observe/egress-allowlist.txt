@@ -1,0 +1,8 @@
+# Host names the agent may reach through the egress proxy (Squid dstdomain:
+# one per line, exact names; a leading dot would also allow subdomains).
+# This base list is all the default (scripted LLM) mode needs: the lab's own
+# local upstream, which stands in for an allowed external API so the test
+# stays offline. scripts/01-observe.sh adds, only in the mode that needs them:
+#   SLACK_TOKEN set     slack.com                                  (slack_sdk: https://slack.com/api/)
+#   LLM_MODE=bedrock    bedrock-runtime.us-east-1.amazonaws.com    (LiteLLM -> Bedrock runtime)
+allowed-upstream.lab-upstream.svc.cluster.local

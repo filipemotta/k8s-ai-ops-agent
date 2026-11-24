@@ -1,0 +1,13 @@
+# The agent's namespace, treated as an untrusted tenant:
+# - Pod Security "restricted" is enforced: no root, no privilege escalation,
+#   no capabilities, RuntimeDefault seccomp;
+# - the label agents.example.com/sandboxed puts it under require-gvisor.yaml:
+#   no pod runs here outside gVisor.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: holmes
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    agents.example.com/sandboxed: "true"

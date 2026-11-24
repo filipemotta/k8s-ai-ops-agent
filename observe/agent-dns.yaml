@@ -1,0 +1,113 @@
+# The agent's own resolver. The cluster's CoreDNS forwards any name it does
+# not own to the internet, so a pod that can query it can leak data in the
+# names it asks for (<data>.attacker.example), with no TCP connection at all.
+# This CoreDNS answers cluster.local (and reverse lookups) from the Kubernetes
+# API and nothing else: no forward plugin, no recursion. The Holmes pod uses
+# it as its only nameserver (dnsConfig in observe/holmes-values.yaml) and its
+# NetworkPolicy allows no other DNS server. External names are resolved by the
+# egress proxy, which the agent reaches by its cluster.local name.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agent-dns
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-dns
+  namespace: agent-dns
+---
+# The same read-only permissions as the cluster's CoreDNS (kubeadm's
+# ClusterRole system:coredns: list/watch endpoints, services, namespaces,
+# EndpointSlices).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agent-dns
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:coredns
+subjects:
+- kind: ServiceAccount
+  name: agent-dns
+  namespace: agent-dns
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-dns
+  namespace: agent-dns
+data:
+  Corefile: |
+    .:1053 {
+        errors
+        health :8080
+        ready :8181
+        kubernetes cluster.local in-addr.arpa ip6.arpa {
+            pods insecure
+            fallthrough in-addr.arpa ip6.arpa
+        }
+        cache 30
+        loop
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-dns
+  namespace: agent-dns
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: agent-dns}
+  template:
+    metadata:
+      labels: {app: agent-dns}
+    spec:
+      serviceAccountName: agent-dns
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+      - name: coredns
+        # The CoreDNS version the kind node runs (Kubernetes v1.37.0), pinned by digest.
+        image: registry.k8s.io/coredns/coredns:v1.14.6@sha256:900f9c109f7a33545d3c811516e8376df9019147b750f5ce3e254468769176ea
+        args: ["-conf", "/etc/coredns/Corefile"]
+        ports:
+        - {name: dns, containerPort: 1053, protocol: UDP}
+        - {name: dns-tcp, containerPort: 1053, protocol: TCP}
+        readinessProbe:
+          httpGet: {path: /ready, port: 8181}
+          periodSeconds: 5
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          # The coredns binary carries the file capability cap_net_bind_service:
+          # without it in the bounding set, exec fails ("operation not permitted").
+          # The only capability Pod Security "restricted" lets a pod add.
+          capabilities: {drop: ["ALL"], add: ["NET_BIND_SERVICE"]}
+        resources:
+          requests: {cpu: 10m, memory: 24Mi}
+          limits: {memory: 96Mi}
+        volumeMounts:
+        - {name: config, mountPath: /etc/coredns}
+      volumes:
+      - name: config
+        configMap: {name: agent-dns}
+---
+# A fixed ClusterIP, so the Holmes pod's dnsConfig can name it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-dns
+  namespace: agent-dns
+spec:
+  clusterIP: 10.96.53.53
+  selector: {app: agent-dns}
+  ports:
+  - {name: dns, port: 53, targetPort: 1053, protocol: UDP}
+  - {name: dns-tcp, port: 53, targetPort: 1053, protocol: TCP}
