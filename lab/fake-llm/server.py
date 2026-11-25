@@ -241,7 +241,7 @@ def alert(messages):
 
 POD_LIST = "kubectl get pods -n sandbox -l app=checkout -L app.kubernetes.io/version"
 # Holmes refuses a call identical to an earlier one, so each retry differs.
-POD_LIST_ATTEMPTS = [POD_LIST, POD_LIST + " --request-timeout=30s", POD_LIST + " --request-timeout=60s"]
+POD_LIST_ATTEMPTS = [POD_LIST, POD_LIST + " --chunk-size=100", POD_LIST + " --chunk-size=200"]
 
 
 def rollout(messages):

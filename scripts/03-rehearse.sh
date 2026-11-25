@@ -79,6 +79,8 @@ printf '%s\n' "${crationale}" | show
 expect_eq "crash-loop verdict" "fail" "$(hc_field "${HOLMES_NS}" "${chc}" '{.status.result}')"
 expect_match "the question names the crash-loop runbook" 'Runbook for this alert: pod-crash-looping\.' "$(hc_field "${HOLMES_NS}" "${chc}" '{.spec.query}')"
 expect_scripted "the verdict cites the crash-loop runbook's goal" '^Runbook: pod-crash-looping \(Find why a container is in CrashLoopBackOff' "${crationale}"
+expect_scripted "the crash-loop verdict read the pod and its log" 'is in CrashLoopBackOff; last log line: .*PAYMENTS_URL is not set' "${crationale}"
+expect_scripted "the crash-loop verdict carries a suggestion" '^SUGGESTED_FIX: kubectl -n sandbox rollout undo deployment/checkout$' "${crationale}"
 expect_mentions "the verdict names the crash-loop runbook" pod-crash-looping "${crationale}"
 expect_no_match "... and not the memory one" '[Cc]ontainer-memory-will-hit-limit' "${crationale}"
 expect_eq "crash-loop verdict delivered to the destination" "1" \

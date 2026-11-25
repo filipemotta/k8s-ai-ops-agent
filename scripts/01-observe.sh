@@ -137,6 +137,14 @@ expect_eq "the agent runs as uid 10001" "10001" "$(in_holmes id -u)"
 expect_match "the agent's root filesystem is mounted read-only" '^ro(,|$)' "$(in_holmes awk '$2 == "/" { print $4 }' /proc/mounts)"
 expect_eq "runbooks mounted as skills in the agent" "checkout-rollout-verification container-memory-will-hit-limit pod-crash-looping" \
   "$(in_holmes ls /etc/holmes/runbooks | sort | paste -sd' ' -)"
+expect_eq "tool memory limit: the same on amd64 and arm64" "1500" "$(in_holmes printenv TOOL_MEMORY_LIMIT_MB)"
+# kubectl under the same ulimit Holmes puts on every tool, 20 times: one run is
+# not enough, the failure under 800 MB is intermittent. No --request-timeout here:
+# with it, kubectl in this pod skips the in-cluster config and calls localhost:8080.
+# shellcheck disable=SC2016 # expands in the pod
+kubectl_under_mb() { in_holmes sh -c 'n=0; for i in $(seq 20); do (ulimit -v $(($1 * 1024)); kubectl get pods -n holmes) >/dev/null 2>&1 && n=$((n+1)); done; echo $n' _ "$1"; }
+note "kubectl under ulimit -v 800 MB (the amd64 default): $(kubectl_under_mb 800) of 20 runs succeed"
+expect_eq "kubectl works under the tool memory limit, 20 of 20 times" "20" "$(kubectl_under_mb 1500)"
 expect_eq "Holmes container: capabilities dropped" '["ALL"]' "$(hk get deploy "${HOLMES_DEPLOY}" -o jsonpath='{.spec.template.spec.containers[0].securityContext.capabilities.drop}')"
 
 step "RBAC: the agent reads, it does not write and does not read Secrets"

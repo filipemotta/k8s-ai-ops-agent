@@ -25,6 +25,11 @@ additionalEnvVars:
   value: http://egress-proxy.egress-proxy.svc.cluster.local:3128
 - name: NO_PROXY
   value: .svc,.cluster.local,10.96.0.0/16,localhost,127.0.0.1
+# Holmes runs every tool under "ulimit -v": 800 MB by default on amd64, 1500 MB on
+# arm64. Under 800 MB kubectl (Go, under gVisor) sometimes died at start with
+# "out of memory" on amd64. Same value on both; the container limit stays above it.
+- name: TOOL_MEMORY_LIMIT_MB
+  value: "1500"
 # LiteLLM refreshes its model price table from GitHub; use the copy it ships.
 - name: LITELLM_LOCAL_MODEL_COST_MAP
   value: "True"
@@ -124,13 +129,14 @@ containerSecurityContext:
   capabilities:
     drop: ["ALL"]
 
-# The chart asks for 2Gi; the lab measured what the agent uses.
+# The chart requests 2Gi; the lab measured what the agent uses. The limit stays at
+# the chart's 2Gi, above TOOL_MEMORY_LIMIT_MB.
 resources:
   requests:
     cpu: 100m
     memory: 512Mi
   limits:
-    memory: 1Gi
+    memory: 2Gi
 
 # The operator turns HealthCheck, ScheduledHealthCheck and TriggeredHealthCheck
 # resources (holmesgpt.dev/v1alpha1, alpha) into calls to the Holmes API.
