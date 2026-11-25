@@ -79,6 +79,41 @@ check("rollout: GO when every pod runs", v["passed"] is True and "1.5.1" in v["r
 v = json.loads(turn(with_results(m, c1, ["Skill 'checkout-rollout-verification' not found. Available: none", pods_ok]))["message"]["content"])
 check("rollout: says so when the runbook could not be fetched", v["rationale"].startswith("Runbook: checkout-rollout-verification (could not be fetched)"))
 
+# a tool call that failed is not a finding: the word "Error" in Holmes' own
+# error line must not read as a crashing pod
+def failed(call_id, command):
+    return (f'tool_call_metadata={{"tool_name": "bash", "tool_call_id": "{call_id}"}}Error: Command "{command}" '
+            f"returned non-zero exit status 1:\n\n{command}\nUnable to connect to the server: net/http: TLS handshake timeout")
+
+
+def ok_output(text):
+    return 'tool_call_metadata={"tool_name": "bash", "tool_call_id": "x"}kubectl get pods\n' + text
+
+
+m3 = with_results(m, c1, [skill("checkout-rollout-verification"), failed("a", "kubectl get pods")])
+r1 = turn(m3)
+retry = [json.loads(c["function"]["arguments"])["command"] for c in r1["message"].get("tool_calls") or []]
+first = json.loads(c1["message"]["tool_calls"][1]["function"]["arguments"])["command"]
+check("rollout: a failed pod list is retried", len(retry) == 1 and retry[0].startswith("kubectl get pods -n sandbox"))
+check("rollout: the retry differs from the first call (Holmes refuses identical calls)", retry != [first])
+if retry:
+    v = json.loads(turn(with_results(m3, r1, [ok_output(pods_ok)]))["message"]["content"])
+    check("rollout: GO when the retry works", v["passed"] is True and "1.5.1" in v["rationale"])
+    m4 = with_results(m3, r1, [failed("b", "kubectl get pods")])
+    r2 = turn(m4)
+    v = {"passed": None, "rationale": ""}
+    if r2["message"].get("tool_calls"):
+        v = json.loads(turn(with_results(m4, r2, [failed("c", "kubectl get pods")]))["message"]["content"])
+    check("rollout: no GO and no suggested write when the pods cannot be listed", v["passed"] is False
+          and "could not list" in v["rationale"] and "SUGGESTED_FIX: none" in v["rationale"] and "TLS handshake timeout" in v["rationale"])
+q = ("[lab:alert] Prometheus alert KubePodCrashLooping is firing for sandbox/checkout-6bd84bf467-g9cq4 (container checkout): s "
+     "Runbook for this alert: pod-crash-looping. Fetch it with fetch_skill and follow it.")
+mc = [{"role": "user", "content": q}]
+cc = turn(mc)
+v = json.loads(turn(with_results(mc, cc, [skill("pod-crash-looping"), failed("d", "kubectl get pod"), "log"]))["message"]["content"])
+check("crash alert: no suggested write when the pod cannot be read", v["passed"] is False
+      and "could not read" in v["rationale"] and "SUGGESTED_FIX: none" in v["rationale"])
+
 # alert ContainerMemoryWillHitLimit: its runbook + Prometheus -> fail with the pod name
 q = ("[lab:alert] Prometheus alert ContainerMemoryWillHitLimit is firing for shop/leaky-abc12-xyz34 (container leaky): s "
      "Runbook for this alert: container-memory-will-hit-limit. Fetch it with fetch_skill and follow it.")

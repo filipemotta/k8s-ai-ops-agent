@@ -26,8 +26,14 @@ failed=()
 for s in 00-cluster 01-observe 02-predict 03-rehearse 04-act; do
   printf '\n######## %s ########\n' "${s}"
   t0="$(date +%s)"
-  if ! bash "${DIR}/${s}.sh"; then
+  if ! bash "${DIR}/${s}.sh" 2>&1 | tee "${OUT}/step-${s}.log"; then
     failed+=("${s}")
+    # A step that stopped half way never wrote its result: count what it
+    # printed, plus one failure for the part that did not run.
+    if ! grep -q "^${s} " "${OUT}/assertions.txt"; then
+      echo "${s} $(grep -c '^ *\[PASS\]' "${OUT}/step-${s}.log") $(( $(grep -c '^ *\[FAIL\]' "${OUT}/step-${s}.log") + 1 ))" >> "${OUT}/assertions.txt"
+      echo "    step ${s} stopped before its end"
+    fi
     # Every later step needs the cluster from step 0 and the agent from step 1.
     case "${s}" in 00-cluster|01-observe) break ;; esac
   fi
@@ -39,6 +45,16 @@ done
 if [ "${LLM_MODE:-fake}" = bedrock ]; then
   printf '\n######## model usage (cost evidence) ########\n'
   bash "${DIR}/../tools/collect-llm-usage.sh" || failed+=("collect-llm-usage")
+fi
+
+# The tool calls of the agent that failed (scripted model only), also when every
+# step passed: the scripted model retries a failed pod list, and a retry must not
+# hide the error. The injection scenario fails some on purpose.
+if [ "${LLM_MODE:-fake}" = fake ]; then
+  printf '\n######## failed tool calls seen by the scripted model ########\n'
+  bash -c 'source "$1/lib.sh"; transcript' _ "${DIR}" 2>/dev/null |
+    jq -r '[.[] | .scenario as $s | .tool_results_seen[] | select(test("tool_call_metadata=[^\n]*(Error:|fail:|Tool execution failed)")) | "  [\($s)] " + (gsub("\\s+"; " ") | .[0:600])] | unique | if length == 0 then "  none" else .[] end' ||
+    echo "  transcript not available"
 fi
 
 printf '\n######## summary ########\n'

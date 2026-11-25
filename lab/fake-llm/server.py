@@ -76,6 +76,17 @@ def tool_results(messages):
     return [by_id[i] for i in order if i in by_id]
 
 
+def tool_failed(result):
+    """True when Holmes reports that the call itself failed (its error follows
+    the metadata on the same line), as opposed to output that contains "Error"."""
+    return bool(re.search(r"^tool_call_metadata=\{[^\n]*?\}\s*(?:Error:|fail:|Tool execution failed)", result, re.M))
+
+
+def output_lines(result):
+    """The lines of a tool result without Holmes' own header lines."""
+    return [l for l in result.splitlines() if not l.startswith(("tool_call_metadata=", "Params used for the tool call"))]
+
+
 def bash_call(command, prefixes):
     return ("bash", {"command": command, "suggested_prefixes": prefixes})
 
@@ -203,7 +214,10 @@ def crashloop_alert(messages):
         ]
     fetched = results.pop(0) if runbook_requested(messages) else ""
     cite = cite_runbook(messages, fetched)
-    status = results[0] if results else ""
+    if results and tool_failed(results[0]):
+        return "answer", final(
+            cite + f"NO VERDICT: could not read pod {ns}/{pod}: {' '.join(results[0].split())[-300:]}\nSUGGESTED_FIX: none", False)
+    status = "\n".join(output_lines(results[0])) if results else ""
     logs = results[1].strip().splitlines() if len(results) > 1 else []
     deployment = re.sub(r"-[a-z0-9]+-[a-z0-9]+$", "", pod)
     if not re.search(r"CrashLoopBackOff|Error", status):
@@ -225,14 +239,28 @@ def alert(messages):
     return script(messages)
 
 
+POD_LIST = "kubectl get pods -n sandbox -l app=checkout -L app.kubernetes.io/version"
+# Holmes refuses a call identical to an earlier one, so each retry differs.
+POD_LIST_ATTEMPTS = [POD_LIST, POD_LIST + " --request-timeout=30s", POD_LIST + " --request-timeout=60s"]
+
+
 def rollout(messages):
     results = tool_results(messages)
     if not results:
-        return "tools", fetch_runbook(messages) + [bash_call(
-            "kubectl get pods -n sandbox -l app=checkout -L app.kubernetes.io/version", ["kubectl get"])]
+        return "tools", fetch_runbook(messages) + [bash_call(POD_LIST, ["kubectl get"])]
     cite = cite_runbook(messages, results.pop(0) if runbook_requested(messages) else "")
-    pods = results[0]
-    bad = [l for l in pods.splitlines()
+    errors = []
+    while results and tool_failed(results[0]):
+        errors.append(results.pop(0))
+    if not results:
+        if len(errors) < len(POD_LIST_ATTEMPTS):
+            return "tools", [bash_call(POD_LIST_ATTEMPTS[len(errors)], ["kubectl get"])]
+        return "answer", final(
+            cite + f"NO VERDICT: could not list the checkout pods after {len(errors)} attempts: "
+            + " ".join(errors[-1].split())[-300:] + "\nSUGGESTED_FIX: none", False)
+    lines = output_lines(results[0])
+    pods = "\n".join(lines)
+    bad = [l for l in lines
            if re.search(r"CrashLoopBackOff|Error|ImagePullBackOff|ErrImagePull|CreateContainerConfigError", l)]
     versions = sorted(set(re.findall(r"\s(\d+\.\d+\.\d+)\s*$", pods, re.M)))
     if not bad:
